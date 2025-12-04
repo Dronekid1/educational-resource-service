@@ -1,0 +1,26 @@
+{
+  "name": "url-proxy-server",
+  "version": "2.0.0",
+  "description": "Multi-User CORS proxy server - Supports 30+ concurrent users",
+  "main": "multi-user-proxy-server.js",
+  "scripts": {
+    "start": "node multi-user-proxy-server.js",
+    "dev": "nodemon multi-user-proxy-server.js"
+  },
+  "keywords": ["proxy", "cors", "url-opener", "multi-user", "concurrent"],
+  "author": "Rachel Couch",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "node-fetch": "^2.6.12",
+    "express-rate-limit": "^7.1.5",
+    "compression": "^1.7.4"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
