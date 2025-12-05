@@ -11,7 +11,6 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // FIXED: Trust proxy setting for Render deployment
-// This fixes the "X-Forwarded-For" header error
 app.set('trust proxy', true);
 
 // Enable compression
@@ -26,7 +25,7 @@ app.use((req, res, next) => {
     next();
 });
 
-// FIXED: Rate limiting with proper trust proxy configuration
+// Rate limiting
 const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 100,
@@ -213,6 +212,77 @@ app.get('/', (req, res) => {
 </html>`);
 });
 
+// Helper function to rewrite URLs in HTML content
+function rewriteUrls(html, targetOrigin, proxyUrl) {
+    try {
+        const base = new URL(targetOrigin);
+        
+        // Rewrite absolute URLs
+        html = html.replace(
+            /(href|src|action|data)=["']https?:\/\/[^"']+["']/gi,
+            (match, attr) => {
+                const urlMatch = match.match(/["'](https?:\/\/[^"']+)["']/);
+                if (urlMatch && urlMatch[1]) {
+                    return `${attr}="${proxyUrl}?url=${encodeURIComponent(urlMatch[1])}"`;
+                }
+                return match;
+            }
+        );
+        
+        // Rewrite protocol-relative URLs (//example.com/path)
+        html = html.replace(
+            /(href|src|action|data)=["']\/\/[^"']+["']/gi,
+            (match, attr) => {
+                const urlMatch = match.match(/["'](\/\/[^"']+)["']/);
+                if (urlMatch && urlMatch[1]) {
+                    const fullUrl = 'https:' + urlMatch[1];
+                    return `${attr}="${proxyUrl}?url=${encodeURIComponent(fullUrl)}"`;
+                }
+                return match;
+            }
+        );
+        
+        // Rewrite root-relative URLs (/path)
+        html = html.replace(
+            /(href|src|action|data)=["']\/[^/"'][^"']*["']/gi,
+            (match, attr) => {
+                const urlMatch = match.match(/["'](\/[^"']+)["']/);
+                if (urlMatch && urlMatch[1]) {
+                    const fullUrl = base.origin + urlMatch[1];
+                    return `${attr}="${proxyUrl}?url=${encodeURIComponent(fullUrl)}"`;
+                }
+                return match;
+            }
+        );
+        
+        // Rewrite relative URLs (path/to/resource)
+        html = html.replace(
+            /(href|src|action|data)=["'](?!https?:\/\/|\/\/|\/|#|data:|javascript:)[^"']+["']/gi,
+            (match, attr) => {
+                const urlMatch = match.match(/["']([^"']+)["']/);
+                if (urlMatch && urlMatch[1]) {
+                    const fullUrl = new URL(urlMatch[1], targetOrigin).href;
+                    return `${attr}="${proxyUrl}?url=${encodeURIComponent(fullUrl)}"`;
+                }
+                return match;
+            }
+        );
+        
+        // Add base tag to help with remaining relative URLs
+        if (!html.includes('<base ')) {
+            html = html.replace(
+                /<head[^>]*>/i,
+                `$&\n<base href="${proxyUrl}?url=${encodeURIComponent(targetOrigin)}/">`
+            );
+        }
+        
+        return html;
+    } catch (error) {
+        console.error('URL rewrite error:', error);
+        return html;
+    }
+}
+
 // STEALTH PROXY ENDPOINT
 app.get('/api/resource', async (req, res) => {
     const targetUrl = req.query.url || req.query.src || req.query.link;
@@ -267,8 +337,15 @@ app.get('/api/resource', async (req, res) => {
         clearTimeout(timeout);
 
         const contentType = response.headers.get('content-type') || 'text/html';
-        const body = await response.text();
+        let body = await response.text();
         
+        // FIXED: Rewrite URLs in HTML content so internal links work through proxy
+        if (contentType.includes('text/html')) {
+            const proxyUrl = `${req.protocol}://${req.get('host')}/api/resource`;
+            body = rewriteUrls(body, targetUrl, proxyUrl);
+        }
+        
+        // Cache successful responses
         if (response.ok && body.length < 1024 * 1024) {
             cache.set(cacheKey, {
                 body,
