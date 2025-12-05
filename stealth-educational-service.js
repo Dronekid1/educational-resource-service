@@ -343,6 +343,60 @@ app.get('/api/resource', async (req, res) => {
         if (contentType.includes('text/html')) {
             const proxyUrl = `${req.protocol}://${req.get('host')}/api/resource`;
             body = rewriteUrls(body, targetUrl, proxyUrl);
+            
+            // Inject JavaScript to handle client-side navigation
+            const injectedScript = `
+            <script>
+            (function() {
+                // Store the original site info
+                window.__PROXY_ORIGIN__ = '${new URL(targetUrl).origin}';
+                window.__PROXY_URL__ = '${req.protocol}://${req.get('host')}/api/resource';
+                
+                // Intercept window.location changes
+                const originalLocation = window.location;
+                let currentHref = window.location.href;
+                
+                // Override window.location.href setter
+                Object.defineProperty(window.location, 'href', {
+                    get: function() { return currentHref; },
+                    set: function(url) {
+                        if (url.startsWith('/')) {
+                            // Relative URL - redirect through proxy
+                            currentHref = window.__PROXY_URL__ + '?url=' + encodeURIComponent(window.__PROXY_ORIGIN__ + url);
+                            originalLocation.href = currentHref;
+                        } else if (url.startsWith('http')) {
+                            // Absolute URL - redirect through proxy
+                            currentHref = window.__PROXY_URL__ + '?url=' + encodeURIComponent(url);
+                            originalLocation.href = currentHref;
+                        } else {
+                            currentHref = url;
+                            originalLocation.href = url;
+                        }
+                    }
+                });
+                
+                // Intercept pushState and replaceState
+                const pushState = history.pushState;
+                const replaceState = history.replaceState;
+                
+                history.pushState = function(state, title, url) {
+                    if (url && url.startsWith('/')) {
+                        url = window.__PROXY_URL__ + '?url=' + encodeURIComponent(window.__PROXY_ORIGIN__ + url);
+                    }
+                    return pushState.call(history, state, title, url);
+                };
+                
+                history.replaceState = function(state, title, url) {
+                    if (url && url.startsWith('/')) {
+                        url = window.__PROXY_URL__ + '?url=' + encodeURIComponent(window.__PROXY_ORIGIN__ + url);
+                    }
+                    return replaceState.call(history, state, title, url);
+                };
+            })();
+            </script>
+            `;
+            
+            body = body.replace('</head>', injectedScript + '</head>');
         }
         
         // Cache successful responses
@@ -378,6 +432,59 @@ app.get('/api/resource', async (req, res) => {
 app.get('/proxy', async (req, res) => {
     req.url = '/api/resource' + (req.url.includes('?') ? '&' : '?') + 'url=' + (req.query.url || '');
     app.handle(req, res);
+});
+
+// FIXED: Catch-all route handler for paths that should go through proxy
+// This handles routes like /login, /register, etc. when accessed directly
+app.get('*', (req, res) => {
+    // If it's not the homepage and doesn't start with /api/, redirect through proxy
+    if (req.path !== '/' && !req.path.startsWith('/api/')) {
+        // Get the referer to figure out what site they were browsing
+        const referer = req.get('referer');
+        
+        if (referer && referer.includes('/api/resource?url=')) {
+            // Extract the original site URL from the referer
+            const urlMatch = referer.match(/[?&]url=([^&]+)/);
+            if (urlMatch) {
+                try {
+                    const originalSite = decodeURIComponent(urlMatch[1]);
+                    const siteOrigin = new URL(originalSite).origin;
+                    // Redirect to the path on the original site through the proxy
+                    const targetUrl = siteOrigin + req.path + (req.url.includes('?') ? '?' + req.url.split('?')[1] : '');
+                    return res.redirect(`/api/resource?url=${encodeURIComponent(targetUrl)}`);
+                } catch (e) {
+                    console.error('Failed to parse referer:', e);
+                }
+            }
+        }
+        
+        // If we can't determine the original site, return an error with helpful message
+        return res.status(404).send(`
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Navigation Error</title>
+                <style>
+                    body { font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }
+                    .error { background: #fee; border: 1px solid #fcc; padding: 20px; border-radius: 8px; }
+                    .home-link { display: inline-block; margin-top: 20px; padding: 10px 20px; background: #3b82f6; color: white; text-decoration: none; border-radius: 4px; }
+                </style>
+            </head>
+            <body>
+                <div class="error">
+                    <h2>⚠️ Navigation Error</h2>
+                    <p>You tried to access: <code>${req.path}</code></p>
+                    <p>This path must be accessed through the proxy. Please navigate to the website using the proxy first:</p>
+                    <p><strong>Format:</strong> <code>/api/resource?url=https://example.com</code></p>
+                </div>
+                <a href="/" class="home-link">← Back to Home</a>
+            </body>
+            </html>
+        `);
+    }
+    
+    // For homepage, continue normally
+    next();
 });
 
 // Error handling
