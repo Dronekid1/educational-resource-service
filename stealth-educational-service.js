@@ -10,6 +10,10 @@ const compression = require('compression');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// FIXED: Trust proxy setting for Render deployment
+// This fixes the "X-Forwarded-For" header error
+app.set('trust proxy', true);
+
 // Enable compression
 app.use(compression());
 
@@ -22,7 +26,7 @@ app.use((req, res, next) => {
     next();
 });
 
-// Rate limiting
+// FIXED: Rate limiting with proper trust proxy configuration
 const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 100,
@@ -31,7 +35,7 @@ const limiter = rateLimit({
     legacyHeaders: false,
 });
 
-app.use('/api/resource', limiter); // Changed endpoint name to look educational
+app.use('/api/resource', limiter);
 
 // Cache
 const cache = new Map();
@@ -209,10 +213,8 @@ app.get('/', (req, res) => {
 </html>`);
 });
 
-// STEALTH PROXY ENDPOINT - Using educational-looking endpoint names
-// Use /api/resource instead of /proxy
+// STEALTH PROXY ENDPOINT
 app.get('/api/resource', async (req, res) => {
-    // Accept both 'url' and 'src' parameters to look more API-like
     const targetUrl = req.query.url || req.query.src || req.query.link;
     
     if (!targetUrl) {
@@ -242,14 +244,12 @@ app.get('/api/resource', async (req, res) => {
         
         console.log(`[FETCH] ${targetUrl} | Active: ${activeConnections}`);
         
-        // Advanced fetch with better headers to avoid detection
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 15000);
         
         const response = await fetch(targetUrl, {
             signal: controller.signal,
             headers: {
-                // Mimic a real browser more accurately
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.9',
@@ -269,7 +269,6 @@ app.get('/api/resource', async (req, res) => {
         const contentType = response.headers.get('content-type') || 'text/html';
         const body = await response.text();
         
-        // Cache successful responses
         if (response.ok && body.length < 1024 * 1024) {
             cache.set(cacheKey, {
                 body,
@@ -278,7 +277,6 @@ app.get('/api/resource', async (req, res) => {
             });
         }
         
-        // Send with educational-looking headers
         res.set('Content-Type', contentType);
         res.set('Access-Control-Allow-Origin', '*');
         res.set('X-Cache-Status', 'MISS');
@@ -299,9 +297,8 @@ app.get('/api/resource', async (req, res) => {
     }
 });
 
-// Also support the old /proxy endpoint for backwards compatibility
+// Backwards compatibility endpoint
 app.get('/proxy', async (req, res) => {
-    // Redirect to new endpoint
     req.url = '/api/resource' + (req.url.includes('?') ? '&' : '?') + 'url=' + (req.query.url || '');
     app.handle(req, res);
 });
